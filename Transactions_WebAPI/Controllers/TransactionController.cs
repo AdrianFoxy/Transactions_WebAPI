@@ -79,13 +79,54 @@ namespace Transactions_WebAPI.Controllers
             using var connection = _dapperContext.CreateConnection();
             var result = await connection.QueryAsync<Transaction>("SELECT * FROM \"Transaction\"");
 
-            if (result == null)
+            if (result == null || !result.Any())
                 return NotFound("No transactions found.");
 
             var filePath = CreateExportFilePath($"Transactions_Report_{DateTime.Now:yyyyMMddHHmmss}");
             await _fileProcessingService.SaveExcelFile(result, new FileInfo(filePath));
 
             return Ok();
+        }
+
+        /// <summary>
+        /// Retrieves transactions within a specified date range, converted to the user's time zone.
+        /// </summary>
+        /// <remarks>
+        /// NOTE: The user's time zone is IANA time zone format (e.g. "Europe/Kiev").
+        ///
+        /// Example data for request: startDate: 2023-12-31 00:00:00, endDate: 2024-01-01 23:59:59, userTimeZone: "Europe/Kiev"
+        /// </remarks>
+        /// <returns>Returns a list of transactions that fall within the specified date range, converted to the user's time zone.</returns>
+        [HttpGet("date-range-user-time-zone")]
+        public async Task<ActionResult<List<Transaction>>> GetTransactionsInDateRangeUserTimeZone
+            ([Required] DateTime startDate, [Required] DateTime endDate, string userTimeZone, bool excelExport = false)
+        {
+            using var connection = _dapperContext.CreateConnection();
+            var transactions = await connection.QueryAsync<Transaction>("SELECT * FROM \"Transaction\"");
+
+            TimeZoneInfo userTimeZoneInfo = TZConvert.GetTimeZoneInfo(userTimeZone);
+
+            var filteredTransactions = transactions.Where(t =>
+            {
+                // IANA timezones prefixed with Etc/GMT are reversed
+                var timeZone = t.TimeZone;
+                if (timeZone.StartsWith("Etc/GMT"))
+                    timeZone = timeZone.Replace("+", "TEMP").Replace("-", "+").Replace("TEMP", "-");
+
+                TimeZoneInfo clientTimeZoneInfo = TZConvert.GetTimeZoneInfo(timeZone);
+                DateTime clientLocalTime = TimeZoneInfo.ConvertTime(t.TransactionDate, clientTimeZoneInfo, userTimeZoneInfo);
+                return clientLocalTime >= startDate && clientLocalTime <= endDate;
+            })
+            .OrderBy(t => t.TransactionDate)
+            .ToList();
+
+            if (excelExport)
+            {
+                var filePath = CreateExportFilePath($"Transactions_Report_{DateTime.Now:yyyyMMddHHmmss}");
+                await _fileProcessingService.SaveExcelFile(filteredTransactions, new FileInfo(filePath));
+            }
+
+            return Ok(filteredTransactions);
         }
 
         /// <summary>
@@ -115,47 +156,6 @@ namespace Transactions_WebAPI.Controllers
             }
 
             return Ok(transactions.ToList());
-        }
-
-        /// <summary>
-        /// Retrieves transactions within a specified date range, converted to the user's time zone.
-        /// </summary>
-        /// <remarks>
-        /// NOTE: The user's time zone is IANA time zone format (e.g. "Europe/Kiev").
-        ///
-        /// Example data for request: startDate: 2023-12-31 00:00:00, endDate: 2024-01-01 23:59:59, userTimeZone: "Europe/Kiev"
-        /// </remarks>
-        /// <returns>Returns a list of transactions that fall within the specified date range, converted to the user's time zone.</returns>
-        [HttpGet("date-range-user-time-zone")]
-        public async Task<ActionResult<List<Transaction>>> GetTransactionsInDateRangeUserTimeZone
-            ([Required]DateTime startDate, [Required]DateTime endDate, string userTimeZone, bool excelExport = false)
-        {
-            using var connection = _dapperContext.CreateConnection();
-            var transactions = await connection.QueryAsync<Transaction>("SELECT * FROM \"Transaction\"");
-
-            TimeZoneInfo userTimeZoneInfo = TZConvert.GetTimeZoneInfo(userTimeZone);
-
-            var filteredTransactions = transactions.Where(t =>
-            {
-                // IANA timezones prefixed with Etc/GMT are reversed
-                var timeZone = t.TimeZone;
-                if (timeZone.StartsWith("Etc/GMT"))
-                    timeZone = timeZone.Replace("+", "TEMP").Replace("-", "+").Replace("TEMP", "-");
-
-                TimeZoneInfo clientTimeZoneInfo = TZConvert.GetTimeZoneInfo(timeZone);
-                DateTime clientLocalTime = TimeZoneInfo.ConvertTime(t.TransactionDate, clientTimeZoneInfo, userTimeZoneInfo);
-                return clientLocalTime >= startDate && clientLocalTime <= endDate;
-            })
-            .OrderBy(t => t.TransactionDate)
-            .ToList();
-
-            if (excelExport)
-            {
-                var filePath = CreateExportFilePath($"Transactions_Report_{DateTime.Now:yyyyMMddHHmmss}");
-                await _fileProcessingService.SaveExcelFile(filteredTransactions, new FileInfo(filePath));
-            }
-
-            return Ok(filteredTransactions);
         }
 
         /// <summary>
